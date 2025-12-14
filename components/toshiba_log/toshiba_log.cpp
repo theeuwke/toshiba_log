@@ -17,8 +17,4 @@ void ToshibaLog::loop() {
   }
 }
 
-void ToshibaLog::~ToshibaLog() {
-  ESP_LOGI(TAG, "UART logger stopped");
-}
-
-}  // 
+}  // to namespace toshiba_log

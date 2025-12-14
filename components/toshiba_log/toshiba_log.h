@@ -8,7 +8,7 @@ class ToshibaLog : public esphome::Component,
                      public esphome::uart::UARTDevice {
 
   public:
-    ~ToshibaLog() override = default;
+    ~ToshibaLog();
     void setup() override;
     void loop() override;
 };
