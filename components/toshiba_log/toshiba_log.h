@@ -7,8 +7,8 @@ namespace toshiba_log {
 class ToshibaLog : public esphome::Component,
                      public esphome::uart::UARTDevice {
 
-  ~ToshibaLog() override = default;
   public:
+    ~ToshibaLog() override = default;
     void setup() override;
     void loop() override;
 };
