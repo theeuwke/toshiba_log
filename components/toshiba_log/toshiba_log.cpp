@@ -1,6 +1,8 @@
 #include "estia-serial.h"
 #include "toshiba_log.h"
 #include "esphome/core/log.h"
+#include <cmath>
+#include <utility>
 
 namespace toshiba_log {
 
@@ -8,7 +10,7 @@ static const char *TAG = "toshiba_log";
 
 void ToshibaLog::setup() {
   ESP_LOGI(TAG, "UART logger started");
-  estiaSerial = std::make_unique<EstiaSerial>(*this);
+  estiaSerial.reset(new EstiaSerial(*this));
 }
 
 void ToshibaLog::loop() {
@@ -28,15 +30,20 @@ void ToshibaLog::loop() {
       } else if (estiaSerial->newStatusData) {
         StatusData data = estiaSerial->getStatusData();
         printStatusData(data);
+        publish_status_entities_(data);
         // request sensors data after extended status data received (every 30s)
-        if (data.extendedData) {
+        if (active_requests_enabled_ && data.extendedData) {
           if (data.pump1 ||                                                      // when pump1 is on every 30s
               millis() - requestDataTimer >= requestDataOffInterval - 1000) {    // when pump1 is off every 5min
             requestDataTimer = millis();
-            // request update for default data points (config.h -> SENSORS_DATA_TO_REQUEST)
-            estiaSerial->requestSensorsData();
-            // or request update for chosen data points
-            // estiaSerial->requestSensorsData({"twi", "two", "wf"}, true)
+            // request exactly the data points that have a configured sensor: entry
+            // (see set_data_sensor()) -- no separate list to keep in sync, and if
+            // none are configured we deliberately don't fall back to a default list
+            DataToRequest wanted;
+            for (auto& kv : data_sensors_) { wanted.push_back(kv.first); }
+            if (!wanted.empty()) {
+              estiaSerial->requestSensorsData(std::move(wanted));
+            }
           }
         }
       }
@@ -44,19 +51,64 @@ void ToshibaLog::loop() {
     case EstiaSerial::sniff_idle:
       // to avoid data collisions write and request data here
       if (estiaSerial->newSensorsData) {
-        for (auto& sensor : estiaSerial->getSensorsData()) {
-          ESP_LOGD(TAG,"%s :", sensor.first.c_str());
-          // data is error code skip multiplier
-          if (sensor.second.value <= EstiaSerial::err_not_exist) {
-            ESP_LOGD(TAG, "%d", sensor.second.value);
-          } else {
-            ESP_LOGD(TAG, "%f", sensor.second.value * sensor.second.multiplier);
-          }
-          ESP_LOGD(TAG, "\n");
-        }
+        publish_data_sensors_();
       }
       break;
     }
+}
+
+void ToshibaLog::publish_data_sensors_() {
+  for (auto& sensor : estiaSerial->getSensorsData()) {
+    auto it = data_sensors_.find(sensor.first);
+    if (it == data_sensors_.end()) { continue; }
+    // data is error code, skip multiplier
+    if (sensor.second.value <= EstiaSerial::err_not_exist) {
+      it->second->publish_state(NAN);
+    } else {
+      it->second->publish_state(sensor.second.value * sensor.second.multiplier);
+    }
+  }
+}
+
+void ToshibaLog::publish_status_entities_(StatusData& data) {
+  if (data.error != StatusFrame::err_ok) { return; }
+
+  auto publish_sensor = [&](const char* key, uint8_t value) {
+    auto it = status_sensors_.find(key);
+    if (it != status_sensors_.end()) { it->second->publish_state(value); }
+  };
+  publish_sensor("hot_water_target", data.hotWaterTarget);
+  publish_sensor("zone1_target", data.zone1Target);
+  publish_sensor("zone2_target", data.zone2Target);
+  if (data.extendedData) {
+    publish_sensor("hot_water_target2", data.hotWaterTarget2);
+    publish_sensor("zone1_target2", data.zone1Target2);
+    publish_sensor("zone2_target2", data.zone2Target2);
+  }
+
+  auto publish_binary = [&](const char* key, bool value) {
+    auto it = status_binary_sensors_.find(key);
+    if (it != status_binary_sensors_.end()) { it->second->publish_state(value); }
+  };
+  publish_binary("cooling", data.cooling);
+  publish_binary("heating", data.heating);
+  publish_binary("hot_water", data.hotWater);
+  publish_binary("auto_mode", data.autoMode);
+  publish_binary("quiet_mode", data.quietMode);
+  publish_binary("night_mode", data.nightMode);
+  publish_binary("backup_heater", data.backupHeater);
+  publish_binary("cooling_cmp", data.coolingCMP);
+  publish_binary("heating_cmp", data.heatingCMP);
+  publish_binary("hot_water_heater", data.hotWaterHeater);
+  publish_binary("hot_water_cmp", data.hotWaterCMP);
+  publish_binary("pump1", data.pump1);
+  publish_binary("defrost_in_progress", data.defrostInProgress);
+  publish_binary("night_mode_active", data.nightModeActive);
+
+  auto ts_it = status_text_sensors_.find("operation_mode");
+  if (ts_it != status_text_sensors_.end()) {
+    ts_it->second->publish_state(data.operationMode == 0x06 ? "heating" : "cooling");
+  }
 }
 
 void ToshibaLog::printStatusData(StatusData& data) {

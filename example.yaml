@@ -1,0 +1,71 @@
+esphome:
+  name: toshiba-estia
+
+esp32:
+  board: lolin_c3_mini
+  variant: esp32c3
+  framework:
+    type: arduino
+
+external_components:
+  - source:
+      type: local
+      path: components
+
+logger:
+api:
+ota:
+  platform: esphome
+
+# replace with your own network credentials (or use !secret, see ESPHome docs)
+wifi:
+  ssid: "REPLACE_ME"
+  password: "REPLACE_ME"
+
+# R32-generation Estia Tu2C bus only -- see PROTOCOL.md
+uart:
+  id: uart_bus
+  baud_rate: 2400
+  parity: EVEN
+  data_bits: 8
+  stop_bits: 1
+  rx_pin: GPIO4
+  tx_pin: GPIO5    # only needed if you enable the "Enable Active Requests" switch below
+
+toshiba_log:
+  id: heat_pump
+  uart_id: uart_bus
+
+sensor:
+  - platform: toshiba_log
+    type: twi
+    name: "Water Inlet Temperature"
+  - platform: toshiba_log
+    type: two
+    name: "Water Outlet Temperature"
+  - platform: toshiba_log
+    type: wf
+    name: "Water Flow"
+  - platform: toshiba_log
+    type: zone1_target
+    name: "Zone 1 Target Temperature"
+
+binary_sensor:
+  - platform: toshiba_log
+    type: pump1
+    name: "Circulation Pump"
+  - platform: toshiba_log
+    type: heating
+    name: "Heating Active"
+
+text_sensor:
+  - platform: toshiba_log
+    type: operation_mode
+    name: "Operation Mode"
+
+switch:
+  # Experimental: actively requests the sensor: entries above from the bus
+  # instead of only passively sniffing them. Defaults to (and always boots
+  # to) off. Read PROTOCOL.md / README.md before enabling on real hardware.
+  - platform: toshiba_log
+    name: "Enable Active Requests"

@@ -17,6 +17,7 @@ License along with this library; if not, see <https://www.gnu.org/licenses/>.
 */
 
 #include "estia-serial.hpp"
+#include <cstring>
 
 SensorData::SensorData(int16_t value, const float multiplier)
     : value(value)
@@ -41,6 +42,9 @@ EstiaSerial::EstiaSerial(esphome::uart::UARTDevice &uart)
     , cmdQueue()
     , cmdTimer(0)
     , cmdRetry(0)
+    , txEchoLen(0)
+    , txEchoIndex(0)
+    , txEchoDeadline(0)
     , frameFixer()
     , sensorsData() {
 }
@@ -399,14 +403,20 @@ void EstiaSerial::forceDefrost(uint8_t onOff) {
 
 void EstiaSerial::write(const uint8_t* buffer, uint8_t len, bool disableRx) {
 	if (disableRx) {
-		;//serial->enableRx(false);    // disable RX
+		// arm self-echo suppression: this bus wiring loops transmitted bytes
+		// back onto RX, so the bytes we're about to send are expected to come
+		// straight back and must not be mistaken for real bus traffic. There is
+		// no esphome::uart::UARTDevice equivalent of enableRx(false), so the
+		// echo is filtered out in software by read() instead.
+		uint8_t echoLen = len > FRAME_MAX_LEN ? FRAME_MAX_LEN : len;
+		memcpy(txEchoBuffer, buffer, echoLen);
+		txEchoLen = echoLen;
+		txEchoIndex = 0;
+		txEchoDeadline = millis() + (ESTIA_SERIAL_BYTE_DELAY * echoLen) + ESTIA_SERIAL_TX_ECHO_MARGIN;
 	}
-	//serial->enableIntTx(true);    // enable TX
-	//serial.write(buffer, len); //TODO
-	//serial->enableIntTx(false);    // disable TX
+	serial.write_array(buffer, len);
 	if (disableRx) {
-		serial.flush();           // empty serial RX buffer
-		//serial->enableRx(true);    // enable RX
+		serial.flush();    // block until the frame above is fully clocked out
 	}
 }
 
@@ -419,7 +429,25 @@ bool EstiaSerial::read(ReadBuffer& buffer, bool byteDelay) {
 	if (!serial.available()) { return false; }
 
 	while (serial.available()) {
-		buffer.push_back(serial.read());
+		uint8_t b = serial.read();
+
+		if (txEchoLen > 0) {
+			if (millis() > txEchoDeadline) {
+				txEchoLen = 0;    // echo window missed/expired, treat as live bus data below
+			} else if (b == txEchoBuffer[txEchoIndex]) {
+				txEchoIndex++;
+				if (txEchoIndex >= txEchoLen) { txEchoLen = 0; }    // full echo consumed
+				if (byteDelay) { delay(ESTIA_SERIAL_BYTE_DELAY); }
+				continue;    // our own transmitted byte, don't feed it into the sniffer
+			} else {
+				// mismatch mid-echo: either a genuine bus collision or the bus
+				// doesn't echo at all. Stop suppressing and let this byte (and
+				// everything after it) flow through as normal sniffed data.
+				txEchoLen = 0;
+			}
+		}
+
+		buffer.push_back(b);
 		if (byteDelay) { delay(ESTIA_SERIAL_BYTE_DELAY); }
 		if (buffer.size() > 2 && EstiaFrame::readUint16(buffer, buffer.size() - 2) == FRAME_BEGIN) {    // new frame already began
 			break;

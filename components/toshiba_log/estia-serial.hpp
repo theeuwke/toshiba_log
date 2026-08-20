@@ -46,6 +46,8 @@ License along with this library; if not, see <https://www.gnu.org/licenses/>.
 #define CMD_QUEUE_SIZE 10
 #define CMD_RETRIES 2
 
+#define ESTIA_SERIAL_TX_ECHO_MARGIN 20    // ms slack added to the expected self-echo window
+
 struct SensorData {
 	SensorData(int16_t value, const float multiplier);
 	int16_t value;
@@ -73,6 +75,16 @@ class EstiaSerial {
 	CommandsQueue cmdQueue;
 	uint32_t cmdTimer;
 	uint8_t cmdRetry;
+
+	// software self-echo suppression: the bus wiring loops transmitted bytes
+	// back onto RX (mirrors the original ESP8266 enableRx(false) direction
+	// switch, which esphome::uart::UARTDevice has no equivalent for), so a
+	// just-sent frame is matched and discarded byte-by-byte as it echoes back
+	// instead of being pushed into the sniffer buffer.
+	uint8_t txEchoBuffer[FRAME_MAX_LEN];
+	uint8_t txEchoLen;
+	uint8_t txEchoIndex;
+	uint32_t txEchoDeadline;
 
 	//HardwareSerial* serial;
 	esphome::uart::UARTDevice &serial;
